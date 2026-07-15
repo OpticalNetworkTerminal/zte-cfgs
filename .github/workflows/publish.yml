@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - release
+      - "release/v*"
     tags:
       - "v*"
   workflow_dispatch:
@@ -50,7 +51,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     needs: build
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/release') || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    if: (github.event_name == 'push' && (github.ref == 'refs/heads/release' || startsWith(github.ref, 'refs/heads/release/v'))) || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
     runs-on: ubuntu-latest
     environment:
       name: pypi

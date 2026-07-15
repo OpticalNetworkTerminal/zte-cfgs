@@ -25,8 +25,8 @@ tests/                       格式、密钥、封套 round-trip
 ## 发布
 
 `.github/workflows/ci.yml` 在 push/PR 时运行测试和构建。
-`.github/workflows/publish.yml` 使用两条发布规则：推送 `release` 分支发布正式
-PyPI，推送 `v*` tag 发布 TestPyPI；同时支持手动 workflow_dispatch，并通过
+`.github/workflows/publish.yml` 使用两条发布规则：推送 `release` 或 `release/v*`
+分支发布正式 PyPI，推送 `v*` tag 发布 TestPyPI；同时支持手动 workflow_dispatch，并通过
 `target` 选择 `pypi` 或 `testpypi`。`pyproject.toml` 和
 `src/zte_cfgs/__init__.py` 使用带 `v` 的版本字符串，例如 `v0.2.0`；tag 必须
 和该版本完全一致。

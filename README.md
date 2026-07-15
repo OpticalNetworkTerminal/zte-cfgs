@@ -682,7 +682,7 @@ GitHub Actions 发布规则：
 
 | GitHub 操作 | 发布目标 | workflow job |
 | --- | --- | --- |
-| push 到 `release` 分支 | 正式 PyPI | `publish-pypi` |
+| push 到 `release` 或 `release/v*` 分支 | 正式 PyPI | `publish-pypi` |
 | push `v*` tag，例如 `v0.2.0` | TestPyPI | `publish-testpypi` |
 | 手动运行 workflow，选择 `pypi` | 正式 PyPI | `publish-pypi` |
 | 手动运行 workflow，选择 `testpypi` | TestPyPI | `publish-testpypi` |
@@ -717,12 +717,15 @@ GitHub Environments 名称必须完全一致。workflow 已为发布 job 设置
 | `target` | 发布目标 | 建议选择的 ref |
 | --- | --- | --- |
 | `testpypi` | TestPyPI | `dev` 或其他测试分支 |
-| `pypi` | 正式 PyPI | `release` |
+| `pypi` | 正式 PyPI | `release` 或 `release/v0.2.0` |
 
 也可以使用 GitHub CLI：
 
 ```bash
-# 使用 release 分支手动发布正式 PyPI
+# 使用 release/v0.2.0 分支手动发布正式 PyPI
+gh workflow run publish.yml --ref release/v0.2.0 -f target=pypi
+
+# 也可以使用 release 分支
 gh workflow run publish.yml --ref release -f target=pypi
 
 # 使用 dev 分支手动发布 TestPyPI
