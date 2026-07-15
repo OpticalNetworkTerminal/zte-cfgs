@@ -40,7 +40,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     needs: build
-    if: github.ref == 'refs/heads/release'
+    if: startsWith(github.ref,'refs/heads/release/v')
     runs-on: ubuntu-latest
     environment:
       name: pypi
