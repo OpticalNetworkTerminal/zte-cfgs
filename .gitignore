@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+zte-cfg-keys.json
+db_keys.json
+out-*/
+*.xml
+*.cfg
+*.tgz
+
