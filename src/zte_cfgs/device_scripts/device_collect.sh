@@ -30,4 +30,3 @@ fi
 
 tar -czf "$OUT.tgz" -C /tmp "$(basename "$OUT")" || die="tar failed"
 echo "$OUT.tgz"
-

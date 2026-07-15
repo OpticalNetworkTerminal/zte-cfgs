@@ -1,10 +1,11 @@
-"""Command line interface for zte-cfg-tools."""
+"""Command line interface for zte-cfgs."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from importlib.resources import files
 from pathlib import Path
 
 from . import __version__
@@ -70,7 +71,8 @@ def cmd_keys(args: argparse.Namespace) -> int:
     return 0
 
 
-def _unpack_db_path(path: Path, args: argparse.Namespace, output_dir: Path) -> dict:
+def _unpack_db_path(path: Path, args: argparse.Namespace, output_dir: Path,
+                    output_name: str | None = None) -> dict:
     data = path.read_bytes()
     version = parse_header(data)["version"]
     chosen: KeyMaterial | None = None
@@ -89,13 +91,13 @@ def _unpack_db_path(path: Path, args: argparse.Namespace, output_dir: Path) -> d
     else:
         xml, metadata = unpack_db(data, None, args.strict_crc)
     output_dir.mkdir(parents=True, exist_ok=True)
-    xml_path = output_dir / output_xml_name(path.name)
+    xml_path = output_dir / (output_name or output_xml_name(path.name))
     xml_path.write_bytes(xml)
     meta = {"input": str(path), "output": str(xml_path), "metadata": metadata}
     if chosen:
         meta["key_material"] = {"source": chosen.source, "key_string": chosen.key_string,
                                  "iv_string": chosen.iv_string}
-    (output_dir / f"{path.name}.json").write_text(_json(meta) + "\n", encoding="utf-8")
+    xml_path.with_suffix(".json").write_text(_json(meta) + "\n", encoding="utf-8")
     return meta
 
 
@@ -106,7 +108,12 @@ def cmd_unpack(args: argparse.Namespace) -> int:
         tmp = args.output / f"{args.input.name}.embedded.db"
         tmp.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_bytes(embedded)
-        result = _unpack_db_path(tmp, args, args.output)
+        try:
+            result = _unpack_db_path(
+                tmp, args, args.output, output_name=f"{args.input.stem}.embedded.xml"
+            )
+        finally:
+            tmp.unlink(missing_ok=True)
         print(_json({"container": "e8-cfg", "wrapper": info, "result": result}))
         return 0
     result = _unpack_db_path(args.input, args, args.output)
@@ -145,13 +152,31 @@ def cmd_e8_pack(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scripts(args: argparse.Namespace) -> int:
+    """Export device-side scripts from the installed package."""
+    output_dir = args.output.expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    resource_dir = files("zte_cfgs.device_scripts")
+    exported: list[str] = []
+    for name in ("device_collect.sh", "device_print_indivkey.sh"):
+        destination = output_dir / name
+        if destination.exists() and not args.force:
+            raise FormatError(f"{destination} already exists; use --force to overwrite")
+        resource = resource_dir.joinpath(name)
+        destination.write_bytes(resource.read_bytes())
+        destination.chmod(destination.stat().st_mode | 0o111)
+        exported.append(str(destination))
+    print(_json({"output": str(output_dir), "files": exported}))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="zte-cfg",
+        prog="zte-cfgs",
         description="ZTE ONU db_user_cfg.xml / db_default_cfg.xml / ctce8_*.cfg offline tool",
-        epilog=("Typical flow: zte-cfg keys paramtag -o zte-cfg-keys.json; "
-                "zte-cfg unpack db_user_cfg.xml -o out --keys-file zte-cfg-keys.json; "
-                "zte-cfg pack edited.xml db_user_cfg.new.xml --profile user --keys-file zte-cfg-keys.json"),
+        epilog=("Typical flow: zte-cfgs keys paramtag -o zte-cfgs-keys.json; "
+                "zte-cfgs unpack db_user_cfg.xml -o out --keys-file zte-cfgs-keys.json; "
+                "zte-cfgs pack edited.xml db_user_cfg.new.xml --profile user --keys-file zte-cfgs-keys.json"),
     )
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -162,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("keys", help="read tag 0x0720/INDIVKEY and write a key profile JSON")
     p.add_argument("paramtag", type=Path)
-    p.add_argument("-o", "--output", type=Path, default=Path("zte-cfg-keys.json"))
+    p.add_argument("-o", "--output", type=Path, default=Path("zte-cfgs-keys.json"))
     p.add_argument("--iv", default=DEFAULT_IV, help="user DB IV string; default is the known cspd IV")
     p.set_defaults(func=cmd_keys)
 
@@ -176,7 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("unpack", help="decrypt/decompress a DB or e8 USB backup")
     p.add_argument("input", type=Path)
-    p.add_argument("-o", "--output", type=Path, default=Path("zte-cfg-out"))
+    p.add_argument("-o", "--output", type=Path, default=Path("zte-cfgs-out"))
     p.add_argument("--type", choices=("auto", "db", "e8"), default="auto")
     p.add_argument("--strict-crc", action="store_true")
     add_crypto_options(p)
@@ -199,6 +224,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("output", type=Path)
     p.add_argument("--model")
     p.set_defaults(func=cmd_e8_pack)
+
+    p = sub.add_parser("scripts", aliases=("collect",),
+                       help="export BusyBox device scripts to a local directory")
+    p.add_argument("-o", "--output", type=Path, default=Path("."),
+                   help="output directory; default is the current directory")
+    p.add_argument("--force", action="store_true", help="overwrite existing script files")
+    p.set_defaults(func=cmd_scripts)
     return parser
 
 
@@ -207,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (FormatError, OSError, ValueError) as exc:
-        print(f"zte-cfg: error: {exc}", file=sys.stderr)
+        print(f"zte-cfgs: error: {exc}", file=sys.stderr)
         return 2
 
 

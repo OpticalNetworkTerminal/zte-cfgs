@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+zte-cfgs-keys.json
 zte-cfg-keys.json
 db_keys.json
 out-*/
@@ -11,3 +12,6 @@ out-*/
 *.cfg
 *.tgz
 
+.DS_Store
+cfgs/paramtag
+cfgs/zte-cfg-out/

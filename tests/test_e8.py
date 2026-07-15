@@ -1,8 +1,8 @@
 from pathlib import Path
 import struct
 
-from zte_cfg_tools.e8 import MODEL_MAGIC, WRAP_MAGIC, extract_db, parse_cfg, repack_cfg
-from zte_cfg_tools.format import KeyMaterial, pack_db
+from zte_cfgs.e8 import MODEL_MAGIC, WRAP_MAGIC, extract_db, parse_cfg, repack_cfg
+from zte_cfgs.format import KeyMaterial, pack_db
 
 
 def test_current_e8_sample_round_trip(tmp_path: Path):

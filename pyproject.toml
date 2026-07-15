@@ -3,13 +3,13 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "zte-cfg-tools"
-version = "0.1.1"
+name = "zte-cfgs"
+version = "v0.2.0"
 description = "Offline unpacking, encryption and repacking tools for ZTE ONU configuration files"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-authors = [{name = "zte-cfg-tools contributors"}]
+authors = [{name = "zte-cfgs contributors"}]
 dependencies = ["pycryptodome>=3.20"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -23,10 +23,10 @@ classifiers = [
 test = ["pytest>=8", "build>=1.2"]
 
 [project.scripts]
-zte-cfg = "zte_cfg_tools.cli:main"
+zte-cfgs = "zte_cfgs.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/zte_cfg_tools"]
+packages = ["src/zte_cfgs"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

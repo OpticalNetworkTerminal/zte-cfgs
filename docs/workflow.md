@@ -5,8 +5,8 @@
 ```mermaid
 flowchart LR
     A["ONU: device_collect.sh"] --> B["cfg + tagparam archive"]
-    B --> C["本地 zte-cfg keys"]
-    C --> D["zte-cfg-keys.json"]
+    B --> C["本地 zte-cfgs keys"]
+    C --> D["zte-cfgs-keys.json"]
     D --> E["unpack db_user/default/e8"]
     E --> F["编辑 XML"]
     F --> G["pack DB version 3/4"]
@@ -18,7 +18,7 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    participant CLI as zte-cfg
+    participant CLI as zte-cfgs
     participant Key as keys.py
     participant DB as format.py
     participant AES as AES-CBC

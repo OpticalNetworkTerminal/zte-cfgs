@@ -72,11 +72,40 @@ def default_material() -> KeyMaterial:
     return KeyMaterial(DEFAULT_DB_KEY, DEFAULT_DB_IV, "built-in-default")
 
 
+def profiles_from_indivkey(indivkey: str, iv: str = DEFAULT_IV) -> dict[str, dict]:
+    """Build the same profile structure as ``zte-cfgs keys`` in memory."""
+    material = indivkey_materials(indivkey, iv)[0]
+    return {
+        "user": {"key_string": material.key_string, "iv_string": material.iv_string,
+                 "source": "tagparam INDIVKEY", "indivkey": indivkey},
+        "backup": {"key_string": material.key_string, "iv_string": material.iv_string,
+                   "source": "tagparam INDIVKEY", "indivkey": indivkey},
+        "default": {"key_string": DEFAULT_DB_KEY, "iv_string": DEFAULT_DB_IV,
+                    "source": "known DBDefAESCBC defaults"},
+    }
+
+
 def load_profiles(path: Path | None) -> dict[str, dict]:
-    candidates = [path] if path else [Path.cwd() / "zte-cfg-keys.json", Path.cwd() / "db_keys.json"]
+    candidates = [path] if path else [
+        Path.cwd() / "zte-cfgs-keys.json",
+        Path.cwd() / "zte-cfg-keys.json",  # pre-rename compatibility
+        Path.cwd() / "db_keys.json",
+    ]
     for candidate in candidates:
         if candidate and candidate.expanduser().exists():
-            data = json.loads(candidate.expanduser().read_text(encoding="utf-8"))
+            candidate = candidate.expanduser()
+            raw = candidate.read_bytes()
+            # Compatibility: users commonly pass the downloaded binary
+            # /tagparam/paramtag directly as --keys-file.
+            if raw.startswith(b"TAGH"):
+                return profiles_from_indivkey(read_indivkey(candidate)["value"])
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise KeyError(
+                    f"{candidate} is not a zte-cfgs JSON key file or a TAGH paramtag; "
+                    "use --paramtag for the raw paramtag file"
+                ) from exc
             return data.get("profiles", data)
     return {}
 
@@ -101,14 +130,6 @@ def profile_materials(profile: str, profiles: dict[str, dict], key: str | None =
 
 
 def write_key_file(path: Path, indivkey: str, iv: str = DEFAULT_IV) -> dict:
-    materials = indivkey_materials(indivkey, iv)
-    data = {"profiles": {
-        "user": {"key_string": materials[0].key_string, "iv_string": materials[0].iv_string,
-                  "source": "tagparam INDIVKEY", "indivkey": indivkey},
-        "backup": {"key_string": materials[0].key_string, "iv_string": materials[0].iv_string,
-                   "source": "tagparam INDIVKEY", "indivkey": indivkey},
-        "default": {"key_string": DEFAULT_DB_KEY, "iv_string": DEFAULT_DB_IV,
-                    "source": "known DBDefAESCBC defaults"},
-    }}
+    data = {"profiles": profiles_from_indivkey(indivkey, iv)}
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return data

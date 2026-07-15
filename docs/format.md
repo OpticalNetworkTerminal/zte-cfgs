@@ -55,6 +55,6 @@ raw-deflate 作为兼容读取路径；重新打包固定使用 zlib，因为样
             db_user_cfg.xml container
 ```
 
-`zte-cfg e8-pack` 只替换 model header 后的 DB 容器，并更新 wrapper payload
+`zte-cfgs e8-pack` 只替换 model header 后的 DB 容器，并更新 wrapper payload
 长度；不会修改 DB 内部版本或密文。
 

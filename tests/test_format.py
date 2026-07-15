@@ -1,4 +1,4 @@
-from zte_cfg_tools.format import KeyMaterial, pack_db, parse_header, unpack_db
+from zte_cfgs.format import KeyMaterial, pack_db, parse_header, unpack_db
 
 
 XML = b'<DB>\n  <Tbl name="Example"/>\n</DB>\n'
