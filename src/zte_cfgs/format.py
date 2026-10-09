@@ -1,9 +1,11 @@
 """ZTE XML database container format.
 
-The format uses big-endian 32-bit fields.  Versions 0/1/2 are unencrypted
-variants; versions 3 and 4 contain the same compressed payload behind AES-CBC.
-The implementation keeps all validation in this module so key auto-detection
-cannot mistake random plaintext for a successful decrypt.
+The format uses big-endian 32-bit fields.  Versions 0/1/2 are normally
+unencrypted variants; versions 3 and 4 contain the same compressed payload
+behind AES-CBC.  Some web-exported H2-3e files use version 0 as a marker for a
+zero-key AES-ECB payload instead.  The implementation keeps all validation in
+this module so key auto-detection cannot mistake random plaintext for a
+successful decrypt.
 """
 
 from __future__ import annotations
@@ -21,6 +23,9 @@ HEADER_SIZE = 0x3C
 BLOCK_HEADER_SIZE = 12
 SPLIT_SIZE = 0x10000
 AES_BLOCK = 16
+DB_VARIANT_STANDARD = "standard"
+DB_VARIANT_ECB_ZERO = "ecb-zero"
+ZERO_AES_KEY = b"\0" * AES_BLOCK
 
 
 class FormatError(ValueError):
@@ -123,6 +128,18 @@ def encrypt_cbc(data: bytes, material: KeyMaterial) -> bytes:
     return _cipher(material).encrypt(data)
 
 
+def decrypt_ecb_zero(data: bytes) -> bytes:
+    if len(data) % AES_BLOCK:
+        raise FormatError("AES-ECB input is not block aligned")
+    return AES.new(ZERO_AES_KEY, AES.MODE_ECB).decrypt(data)
+
+
+def encrypt_ecb_zero(data: bytes) -> bytes:
+    if len(data) % AES_BLOCK:
+        raise FormatError("AES-ECB input is not block aligned")
+    return AES.new(ZERO_AES_KEY, AES.MODE_ECB).encrypt(data)
+
+
 def decrypt_outer(data: bytes, material: KeyMaterial) -> tuple[bytes, dict]:
     header = parse_header(data)
     if not header["magic_valid"]:
@@ -196,15 +213,68 @@ def unpack_compressed(data: bytes, strict_crc: bool = False) -> tuple[bytes, dic
     return bytes(output), {"header": header, "blocks": blocks}
 
 
-def unpack_db(data: bytes, material: KeyMaterial | None = None, strict_crc: bool = False) -> tuple[bytes, dict]:
+def unpack_ecb_zero(data: bytes, strict_crc: bool = False) -> tuple[bytes, dict]:
+    """Unpack the zero-key AES-ECB version-0 variant used by H2-3e exports."""
+    header = parse_header(data)
+    if not header["magic_valid"] or header["version"] != 0:
+        raise FormatError("AES-ECB payload is not a version 0 database")
+    words = header["raw_words"]
+    if words[4] not in (0, SPLIT_SIZE):
+        raise FormatError(f"unsupported split size: {words[4]}")
+    if strict_crc:
+        expected = words[6]
+        actual = crc_final(crc_update(data[:0x18]))
+        if expected != actual:
+            raise FormatError(f"header CRC mismatch: 0x{actual:08x} != 0x{expected:08x}")
+
+    blocks = parse_blocks(data)
+    output = bytearray()
+    crc = 0xFFFFFFFF
+    metadata_blocks: list[dict] = []
+    for block in blocks:
+        start = block["payload_offset"]
+        encrypted = data[start:start + block["cipher_len"]]
+        output.extend(decrypt_ecb_zero(encrypted)[:block["plain_len"]])
+        crc = crc_update(encrypted, crc)
+        metadata_blocks.append({
+            "index": block["index"],
+            "raw_len": block["plain_len"],
+            "packed_len": block["cipher_len"],
+            "next": block["next"],
+            "codec": "aes-128-ecb-zero",
+        })
+    if words[2] and len(output) != words[2]:
+        raise FormatError(f"content length mismatch: {len(output)} != {words[2]}")
+    if strict_crc and crc_final(crc) != words[5]:
+        raise FormatError(f"content CRC mismatch: 0x{crc_final(crc):08x} != 0x{words[5]:08x}")
+    if not bytes(output).lstrip().startswith(b"<"):
+        raise FormatError("AES-ECB plaintext is not XML")
+    return bytes(output), {"header": header, "blocks": metadata_blocks,
+                           "variant": DB_VARIANT_ECB_ZERO}
+
+
+def unpack_db(data: bytes, material: KeyMaterial | None = None,
+              strict_crc: bool = False) -> tuple[bytes, dict]:
     """Unpack all documented database versions 0 through 4."""
     header = parse_header(data)
     if not header["magic_valid"]:
         raise FormatError("database magic mismatch")
     version = header["version"]
     if version == 0:
-        xml, inner = unpack_compressed(data, strict_crc)
-        return xml, {"version": version, "inner": inner}
+        try:
+            xml, inner = unpack_compressed(data, strict_crc)
+            return xml, {"version": version, "variant": DB_VARIANT_STANDARD,
+                         "inner": inner}
+        except FormatError as compressed_error:
+            try:
+                xml, inner = unpack_ecb_zero(data, strict_crc)
+                return xml, {"version": version, "variant": DB_VARIANT_ECB_ZERO,
+                             "inner": inner}
+            except FormatError as ecb_error:
+                raise FormatError(
+                    f"version 0 payload is neither compressed nor zero-key AES-ECB: "
+                    f"compressed: {compressed_error}; AES-ECB: {ecb_error}"
+                ) from ecb_error
     if version == 1:
         xml = data[HEADER_SIZE:]
         if not xml.lstrip().startswith(b"<"):
@@ -245,10 +315,68 @@ def pack_compressed(xml: bytes, level: int = 9) -> bytes:
     return bytes(header) + bytes(blocks)
 
 
+def pack_ecb_zero(xml: bytes, template: bytes | None = None) -> bytes:
+    """Pack XML using the H2-3e zero-key AES-ECB block layout."""
+    if not xml.lstrip().startswith(b"<"):
+        raise FormatError("AES-ECB input is not XML")
+    chunks = [xml[i:i + SPLIT_SIZE] for i in range(0, len(xml), SPLIT_SIZE)] or [b""]
+    encrypted_chunks: list[bytes] = []
+    for chunk in chunks:
+        padded = chunk + b"\0" * (-len(chunk) % AES_BLOCK)
+        # A zero-length AES block cannot be represented by this container.
+        if not padded:
+            padded = b"\0" * AES_BLOCK
+        encrypted_chunks.append(encrypt_ecb_zero(padded))
+
+    block_offsets: list[int] = []
+    cursor = HEADER_SIZE
+    for encrypted in encrypted_chunks:
+        block_offsets.append(cursor)
+        cursor += BLOCK_HEADER_SIZE + len(encrypted)
+
+    words = [MAGIC, 0] + [0] * 13
+    next_uses_flag = True
+    size_style = "total"
+    if template is not None:
+        template_header = parse_header(template)
+        if template_header["magic_valid"] and template_header["version"] == 0:
+            words = list(template_header["raw_words"])
+            template_blocks = parse_blocks(template)
+            next_uses_flag = all(block["next"] in (0, 1) for block in template_blocks)
+            if words[3] == 0:
+                size_style = "zero"
+            elif words[3] == template_blocks[-1]["header_offset"]:
+                size_style = "last-block"
+
+    blocks = bytearray()
+    crc = 0xFFFFFFFF
+    for index, (chunk, encrypted) in enumerate(zip(chunks, encrypted_chunks)):
+        has_next = index + 1 < len(chunks)
+        next_value = int(has_next) if next_uses_flag else (
+            block_offsets[index + 1] if has_next else 0
+        )
+        blocks += struct.pack(">III", len(chunk), len(encrypted), next_value)
+        blocks += encrypted
+        crc = crc_update(encrypted, crc)
+
+    block_size = {"zero": 0, "last-block": block_offsets[-1]}.get(size_style, cursor)
+    words[:7] = [MAGIC, 0, len(xml), block_size, SPLIT_SIZE, crc_final(crc), 0]
+    header = bytearray(make_header(words))
+    header[0x18:0x1C] = p32be(crc_final(crc_update(bytes(header[:0x18]))))
+    return bytes(header) + bytes(blocks)
+
+
 def pack_db(xml: bytes, version: int, material: KeyMaterial | None = None,
-            level: int = 9) -> bytes:
+            level: int = 9, *, variant: str = DB_VARIANT_STANDARD,
+            template: bytes | None = None) -> bytes:
     if version == 0:
+        if variant == DB_VARIANT_ECB_ZERO:
+            return pack_ecb_zero(xml, template)
+        if variant != DB_VARIANT_STANDARD:
+            raise FormatError(f"unsupported database variant: {variant}")
         return pack_compressed(xml, level)
+    if variant != DB_VARIANT_STANDARD:
+        raise FormatError(f"database variant {variant} requires version 0")
     if version == 1:
         return make_header([MAGIC, 1]) + xml
     if version == 2:

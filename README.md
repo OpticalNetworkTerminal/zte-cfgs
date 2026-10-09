@@ -14,6 +14,7 @@ ZTE ONU 配置文件的离线解包、解密、修改、重新加密和 U 盘备
 | `db_backup_cfg.xml` | 原始二进制，通常使用同一台设备的 user key | 否 | 用户配置备份 |
 | `db_default_cfg.xml` | 原始二进制，通常是 version 3 默认 key | 否 | 默认配置 |
 | `ctce8_型号.cfg` | 原始 U 盘备份，外层封套内含 DB 容器 | 否 | 管理台“备份到 U 盘”的文件 |
+| `config.bin`（H2-3e） | Web 导出，外层 XOR + 内层零 key AES-ECB | 否 | H2-3e 当前固件的配置备份 |
 | `paramtag` | 设备二进制参数文件，通常来自 `/tagparam/paramtag` | 否 | 读取本机 `INDIVKEY` |
 | `zte-cfgs-keys.json` | 本地生成的 JSON key profile | 不要手工修改 | 保存本机 user/default key 信息 |
 | `out-user/*.xml` | 解密、解压后的明文 XML | 是 | 修改配置的工作文件 |
@@ -120,7 +121,7 @@ scp root@ONT:/path/to/e8_Config_Backup/ctce8_G7615-G-C.cfg .
 | `zte-cfgs info FILE` | 查看文件类型、版本、封套和块信息 | 否 |
 | `zte-cfgs keys PARAMTAG` | 从 paramtag 读取 INDIVKEY，生成 JSON key 文件 | 否 |
 | `zte-cfgs unpack FILE` | 解密/解压 DB，或解包 e8 U 盘备份 | version 3/4 需要 |
-| `zte-cfgs pack XML OUTPUT` | 把明文 XML 压缩并重新加密为 DB | version 3/4 需要 |
+| `zte-cfgs pack XML OUTPUT` | 把明文 XML 重新打包为 DB；封套模板可直接生成完整备份 | version 3/4 需要 |
 | `zte-cfgs e8-pack TEMPLATE DB OUTPUT` | 把新的 DB 放回原始 e8 封套 | 不在此步骤解密 |
 | `zte-cfgs scripts` | 把设备端采集脚本导出到本地目录 | 否 |
 
@@ -365,12 +366,55 @@ zte-cfgs unpack ./ctce8_G7615-G-C.cfg \
 这里的 `embedded.xml` 是明文 XML，可以直接编辑。它不是以后交给
 `e8-pack` 的输入；交给 `e8-pack` 的是后面重新加密得到的 DB 容器。
 
+### 7.5 H2-3e Web `config.bin`
+
+H2-3e 当前固件从 Web 页面导出的 `config.bin` 使用以下组合格式：
+
+```text
+128-byte ZTE header
+  -> 89-byte repeating XOR
+  -> signature "H2-3e"
+  -> version/type 0 payload header
+  -> chunked AES-128-ECB (key = 16 个 0x00 字节)
+  -> XML
+```
+
+解包不需要 `paramtag`、`INDIVKEY`、key string 或 IV：
+
+```bash
+zte-cfgs unpack ./config.bin --output ./out-h2
+```
+
+输出：
+
+```text
+./out-h2/config.embedded.xml
+./out-h2/config.embedded.json
+```
+
+修改 XML 后，直接用原始 `config.bin` 作为模板重新生成完整 Web 备份：
+
+```bash
+zte-cfgs pack \
+  ./out-h2/config.embedded.xml \
+  ./config.new.bin \
+  --template ./config.bin
+```
+
+`pack` 会从模板自动识别 `H2-3e`、零 key AES-ECB 和 XOR 封套，并保留模板的
+型号、字节序和封套类型字段。原始 `config.bin` 不会被覆盖。没有原始模板、只想
+生成 H2-3e 内层 DB 时，也可以显式使用：
+
+```bash
+zte-cfgs pack edited.xml h2-3e.db --format h2-3e
+```
+
 ## 9. `pack`：把修改后的明文 XML 重新压缩并加密
 
 命令格式：
 
 ```bash
-zte-cfgs pack XML_INPUT DB_OUTPUT [OPTIONS]
+zte-cfgs pack XML_INPUT OUTPUT [OPTIONS]
 ```
 
 ### 8.1 `pack` 参数
@@ -378,10 +422,11 @@ zte-cfgs pack XML_INPUT DB_OUTPUT [OPTIONS]
 | 参数 | 必选 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `XML_INPUT` | 是 | 无 | 已解密、已修改的明文 XML |
-| `DB_OUTPUT` | 是 | 无 | 新生成的二进制 DB；名称可带 `.xml`，但内容不是 XML |
-| `--template` | 否 | 无 | 原始 DB 文件；自动复制它的 version |
+| `OUTPUT` | 是 | 无 | 新生成的二进制 DB，或与封套模板同格式的完整备份 |
+| `--template` | 否 | 无 | 原始 DB 或备份封套；自动复制其格式和 version |
 | `--version` | 否 | `auto` | `0` 到 `4`；推荐使用 `--template` 自动匹配 |
 | `--pack-type` | 否 | 无 | `0`=无 AES，`1`=version 3 默认 key，`2`=version 4 user key |
+| `--format` | 否 | `auto` | `auto`、`standard` 或 `h2-3e`；推荐由模板自动识别 |
 | `--profile` | 否 | `auto` | `default`、`user` 或 `backup` |
 | `--keys-file` | 否 | 自动查找 JSON | JSON key 文件，也可以直接传 paramtag |
 | `--paramtag` | 否 | 无 | 自动读取本机 INDIVKEY |
@@ -389,6 +434,9 @@ zte-cfgs pack XML_INPUT DB_OUTPUT [OPTIONS]
 | `--key-string` | 否 | 无 | 手工传入 key string |
 | `--iv-string` | 否 | 无 | 手工传入 IV string |
 | `--level` | 否 | `9` | zlib 压缩等级，范围 `1` 到 `9` |
+
+当 `--template` 是普通 DB 时，`pack` 输出新的 DB；当模板本身是
+`ctce8_*.cfg` 或 H2-3e `config.bin` 封套时，`pack` 输出可直接使用的完整封套。
 
 ### 8.2 重新生成 user DB
 

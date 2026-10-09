@@ -9,8 +9,9 @@ from importlib.resources import files
 from pathlib import Path
 
 from . import __version__
-from .e8 import extract_db, parse_cfg, repack_cfg
-from .format import FormatError, KeyMaterial, parse_header, pack_db, unpack_db
+from .e8 import extract_db, parse_cfg, repack_cfg, repack_cfg_data
+from .format import (DB_VARIANT_ECB_ZERO, DB_VARIANT_STANDARD, FormatError,
+                     KeyMaterial, parse_header, pack_db, unpack_db)
 from .keys import (DEFAULT_IV, indivkey_materials, load_profiles, profile_materials,
                    read_indivkey, write_key_file)
 
@@ -29,15 +30,31 @@ def output_xml_name(filename: str) -> str:
 
 
 def _version_for_pack(value: str, source: Path | None, profile: str,
-                      pack_type: str | None = None) -> int:
+                      pack_type: str | None = None, db_format: str = "auto") -> int:
     if value == "auto" and pack_type is not None:
         return {"0": 0, "1": 3, "2": 4}[pack_type]
     if value != "auto":
         return int(value)
     if source and source.exists():
-        version = parse_header(source.read_bytes())["version"]
+        source_data = source.read_bytes()
+        if _is_cfg(source_data):
+            source_data, _ = extract_db(source)
+        version = parse_header(source_data)["version"]
         return version
+    if db_format == "h2-3e":
+        return 0
     return {"default": 3, "user": 4, "backup": 4}.get(profile, 4)
+
+
+def _variant_for_pack(db_format: str, template_db: bytes | None) -> str:
+    if db_format == "h2-3e":
+        return DB_VARIANT_ECB_ZERO
+    if db_format == "standard":
+        return DB_VARIANT_STANDARD
+    if template_db is not None and parse_header(template_db)["version"] == 0:
+        _, metadata = unpack_db(template_db)
+        return metadata.get("variant", DB_VARIANT_STANDARD)
+    return DB_VARIANT_STANDARD
 
 
 def _materials(args: argparse.Namespace, path: Path) -> list[KeyMaterial]:
@@ -55,7 +72,12 @@ def _materials(args: argparse.Namespace, path: Path) -> list[KeyMaterial]:
 def cmd_info(args: argparse.Namespace) -> int:
     data = args.input.read_bytes()
     if _is_cfg(data):
-        result = {"type": "e8-cfg", **parse_cfg(data)}
+        wrapper = parse_cfg(data)
+        if wrapper["embedded_db_version"] == 0:
+            embedded, _ = extract_db(args.input)
+            _, metadata = unpack_db(embedded)
+            wrapper["embedded_db_variant"] = metadata.get("variant", DB_VARIANT_STANDARD)
+        result = {"type": "e8-cfg", **wrapper}
     else:
         result = {"type": "db", "size": len(data), "header": parse_header(data)}
     print(_json(result))
@@ -136,12 +158,35 @@ def _pack_key(args: argparse.Namespace, output: Path, version: int) -> KeyMateri
 
 
 def cmd_pack(args: argparse.Namespace) -> int:
-    version = _version_for_pack(args.version, args.template, args.profile, args.pack_type)
+    template_data: bytes | None = None
+    template_db: bytes | None = None
+    wrapper_info: dict | None = None
+    if args.template and args.template.exists():
+        template_data = args.template.read_bytes()
+        if _is_cfg(template_data):
+            template_db, wrapper_info = extract_db(args.template)
+        else:
+            template_db = template_data
+    version = _version_for_pack(
+        args.version, args.template, args.profile, args.pack_type, args.db_format
+    )
+    variant = _variant_for_pack(args.db_format, template_db)
     material = _pack_key(args, args.output, version)
-    data = pack_db(args.input.read_bytes(), version, material, args.level)
+    database = pack_db(
+        args.input.read_bytes(), version, material, args.level,
+        variant=variant, template=template_db,
+    )
+    if template_data is not None and wrapper_info is not None:
+        data, wrapper_info = repack_cfg_data(template_data, database)
+        container = "e8-cfg"
+    else:
+        data = database
+        container = "db"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(data)
     print(_json({"output": str(args.output), "size": len(data), "version": version,
+                 "variant": variant, "container": container,
+                 "model": wrapper_info["model"] if wrapper_info else None,
                  "key_source": material.source if material else None}))
     return 0
 
@@ -214,6 +259,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pack-type", choices=("0", "1", "2"),
                     help="zxcfg-compatible alias: 0=plain, 1=default AES, 2=user AES")
     p.add_argument("--template", type=Path, help="copy DB version from an original container")
+    p.add_argument("--format", dest="db_format", choices=("auto", "standard", "h2-3e"),
+                   default="auto", help="database format; auto detects it from --template")
     p.add_argument("--level", type=int, choices=range(1, 10), default=9)
     add_crypto_options(p)
     p.set_defaults(func=cmd_pack)

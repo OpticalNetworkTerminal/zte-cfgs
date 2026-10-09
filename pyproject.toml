@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zte-cfgs"
-version = "v0.2.0"
+version = "v0.3.0"
 description = "Offline unpacking, encryption and repacking tools for ZTE ONU configuration files"
 readme = "README.md"
 requires-python = ">=3.10"
